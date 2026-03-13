@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Poetry / Ambientes Virtuais
+.venv/
+dist/
+
+# VS Code
+.vscode/
+
+# Imagens de teste (opcional, se forem muito grandes)
+*.jpg
+*.png
