@@ -1,3 +1,4 @@
+#Trabalho de Pedro Henrique de Araújo Silva e Antonio Felipe Ferreira de Jesus Moreira
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
