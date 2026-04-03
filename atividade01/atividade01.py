@@ -1,169 +1,202 @@
 import cv2
+import numpy as np
+import matplotlib.pyplot as plt
 import tkinter as tk
 from tkinter import filedialog
 import sys
-import matplotlib.pyplot as plt
-import numpy as np
 
+# =============================================================================
+# FUNÇÃO: SELEÇÃO DE ARQUIVO
+# =============================================================================
 def selecionar_e_ler_imagem():
     """
-    Abre janela de seleção e retorna a imagem lida pelo OpenCV (BGR).
+    Interface gráfica simples para o usuário escolher um arquivo de imagem.
+    Retorna a imagem no formato BGR (padrão do OpenCV).
     """
     root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
+    root.withdraw()  # Oculta a janela principal do Tkinter
+    root.attributes("-topmost", True)  # Garante que a janela de seleção apareça na frente
 
     caminho = filedialog.askopenfilename(
-        title="Selecione uma imagem",
+        title="Selecione a imagem para o Estudo Dirigido",
         filetypes=[("Imagens", "*.jpg *.jpeg *.png *.bmp *.webp")]
     )
-
     root.destroy()
 
     if not caminho:
-        print("Ação cancelada.")
+        print("Operação cancelada pelo usuário.")
         sys.exit()
 
     imagem = cv2.imread(caminho)
     
     if imagem is None:
-        print("Erro ao carregar imagem.")
+        print("Erro crítico: Não foi possível decodificar a imagem.")
         sys.exit()
 
     return imagem
 
-def binarizacao_automatica_adaptativa(img_cinza):
-    # 1. Analisar a Estatística da Imagem (O Histograma na prática)
+# =============================================================================
+# FUNÇÃO: ANÁLISE DO DOMÍNIO DO VALOR (ESTATÍSTICA)
+# =============================================================================
+def extrair_estatisticas_dominio_valor(img_cinza):
+    """
+    Esta função atua no 'Domínio do Valor'. Ela não olha para 'o que' está na 
+    imagem, mas sim para 'como' os números (intensidades) estão distribuídos.
+    
+    Retorna um dicionário com: histograma, média, desvio padrão e 
+    parâmetros sugeridos para binarização.
+    """
+    
+    # 1. Cálculo do Histograma:
+    # Conta a frequência de cada um dos 256 níveis de cinza.
+    # [img]: imagem fonte | [0]: canal (cinza só tem 1) | None: sem máscara
+    # [256]: número de barras (bins) | [0, 256]: intervalo de valores
+    histograma = cv2.calcHist([img_cinza], [0], None, [256], [0, 256])
+
+    # 2. Média Aritmética (Brilho Geral):
+    # Indica se a imagem é, em média, clara ou escura.
     media = np.mean(img_cinza)
+
+    # 3. Desvio Padrão (Contraste):
+    # É a medida de quão 'espalhado' está o histograma.
+    # Desvio alto = Histograma espalhado (Alto contraste).
+    # Desvio baixo = Histograma espremido (Baixo contraste/Imagem lavada).
     desvio_padrao = np.std(img_cinza)
+
+    # 4. Cálculo de Parâmetros Adaptativos baseados na Resolução:
+    # Aqui unimos o Domínio Espacial (tamanho) com o Domínio do Valor (contraste).
     altura, largura = img_cinza.shape
+    menor_dimensao = min(altura, largura)
+
+    # Definimos o tamanho do bloco como uma proporção da imagem (aprox. 5%)
+    # Se o desvio padrão for muito baixo, aumentamos o bloco para evitar ruído.
+    proporcao = 0.05 if desvio_padrao > 30 else 0.08
+    bloco = int(menor_dimensao * proporcao)
     
-    print(f"--- Análise Estatística ---")
-    print(f"Brilho Médio: {media:.2f}")
-    print(f"Desvio Padrão (Contraste): {desvio_padrao:.2f}")
+    # O tamanho do bloco para AdaptiveThreshold PRECISA ser ímpar e maior que 1.
+    if bloco % 2 == 0: bloco += 1
+    if bloco < 3: bloco = 3
 
-    # 2. Definir o Tamanho do Bloco Base (5% da menor dimensão)
-    # Isso garante que em fotos de alta resolução o bloco não seja pequeno demais
-    bloco_base = int(min(altura, largura) * 0.05)
-    
-    # 3. Ajustar de acordo com o "Aperto" do Histograma
-    # Se o desvio padrão for baixo (< 30), o histograma está espremido.
-    # Precisamos de um bloco maior para 'enxergar' a diferença.
-    if desvio_padrao < 30:
-        print("Diagnóstico: Histograma ESPREMIDO (Baixo Contraste).")
-        bloco_final = bloco_base * 2  # Dobramos o bloco para suavizar o ruído
-        c_final = 1                   # C pequeno para não perder detalhes fracos
-    else:
-        print("Diagnóstico: Histograma EQUILIBRADO (Bom Contraste).")
-        bloco_final = bloco_base
-        c_final = 5                   # C maior para limpar melhor as sombras
+    # A constante C será proporcional ao desvio padrão (sensibilidade ao ruído)
+    c_calculado = int(desvio_padrao / 10)
 
-    # O Bloco deve ser sempre ÍMPAR e no mínimo 3
-    if bloco_final % 2 == 0: bloco_final += 1
-    if bloco_final < 3: bloco_final = 3
+    # Empacotamos os dados para retorno
+    stats = {
+        "hist": histograma,
+        "media": media,
+        "desvio": desvio_padrao,
+        "sugestao_bloco": bloco,
+        "sugestao_c": c_calculado,
+        "resolucao": (largura, altura)
+    }
 
-    print(f"Parâmetros Sugeridos: Bloco={bloco_final}, C={c_final}")
+    return stats
 
-    # 4. Aplicar a binarização com os parâmetros calculados
-    bin_auto = cv2.adaptiveThreshold(
+# =============================================================================
+# FUNÇÃO PRINCIPAL (MAIN)
+# =============================================================================
+def main():
+    print("--- Iniciando Processamento de Imagem (Estudo Dirigido) ---")
+
+    # [PASSO 1] Carregar Imagem e Converter para Cinza
+    # O processamento estatístico de brilho exige apenas um canal (intensidade).
+    img_original = selecionar_e_ler_imagem()
+    img_cinza = cv2.cvtColor(img_original, cv2.COLOR_BGR2GRAY)
+
+    # [PASSO 2] Análise Inicial do Domínio do Valor
+    # Extraímos os dados antes de qualquer modificação.
+    stats_orig = extrair_estatisticas_dominio_valor(img_cinza)
+
+    # [PASSO 3] Melhoria de Imagem (Equalização de Histograma)
+    # Este processo redistribui as intensidades para ocupar todo o espectro 0-255.
+    img_equalizada = cv2.equalizeHist(img_cinza)
+    stats_equa = extrair_estatisticas_dominio_valor(img_equalizada)
+
+    # [PASSO 4] Binarização Global (Método de Otsu)
+    # O Otsu analisa o histograma e tenta achar o 'vale' entre dois 'picos'.
+    # Usamos THRESH_BINARY_INV para que o objeto fique BRANCO (255).
+    limiar_otsu, bin_otsu = cv2.threshold(
+        img_cinza, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+
+    # [PASSO 5] Binarização Adaptativa (Local)
+    # Diferente do Otsu, ele calcula o limiar para cada vizinhança de tamanho 'bloco'.
+    # Usamos os parâmetros calculados automaticamente pela nossa função estatística.
+    bin_adaptativa = cv2.adaptiveThreshold(
         img_cinza, 255, 
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
         cv2.THRESH_BINARY_INV, 
-        bloco_final, c_final
+        stats_orig["sugestao_bloco"], 
+        stats_orig["sugestao_c"]
     )
 
-    return bin_auto
+    # [PASSO 6] Cálculo de Métrica de Preenchimento (Área)
+    # Como binarizamos com INV, o objeto é 255 (branco).
+    pixels_objeto = cv2.countNonZero(bin_adaptativa)
+    pixels_totais = bin_adaptativa.size
+    porcentagem_area = (pixels_objeto / pixels_totais) * 100
 
-def main():
+    # =============================================================================
+    # APRESENTAÇÃO DOS RESULTADOS (GRÁFICOS)
+    # =============================================================================
 
-    # 1° Carregar a imagem
-    img_colorida = selecionar_e_ler_imagem()
+    # JANELA 1: Comparação de Histogramas e Equalização
+    plt.figure(figsize=(15, 8))
+    plt.suptitle("Análise do Domínio do Valor: Antes e Depois da Equalização", fontsize=16)
 
-    # 2° Converter para escala de cinza
-    img_cinza = cv2.cvtColor(img_colorida, cv2.COLOR_BGR2GRAY)
-
-    # 3. Gerar o Histograma Original
-    # calcHist(imagem, canais, máscara, número de bins, intervalo)
-    hist_original = cv2.calcHist([img_cinza], [0], None, [256], [0, 256])
-
-    # Exibir imagem e histograma lado a lado
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
+    plt.subplot(2, 2, 1)
     plt.imshow(img_cinza, cmap='gray')
-    plt.title("Imagem em Tons de Cinza")
+    plt.title(f"Original (Desvio Padrão: {stats_orig['desvio']:.2f})")
 
-    plt.subplot(1, 2, 2)
-    plt.plot(hist_original)
-    plt.title("Histograma Original")
-    plt.xlim([0, 256])
-    plt.show()
-
-    # Aplicar a equalização
-    img_equalizada = cv2.equalizeHist(img_cinza)
-
-    # Gerar novo histograma
-    hist_equalizado = cv2.calcHist([img_equalizada], [0], None, [256], [0, 256])
-
-    # Comparação Visual
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(hist_original, color='blue', label='Original')
-    plt.plot(hist_equalizado, color='red', label='Equalizado')
-    plt.legend()
-    plt.title("Comparação de Histogramas")
-
-    plt.subplot(1, 2, 2)
+    plt.subplot(2, 2, 2)
     plt.imshow(img_equalizada, cmap='gray')
-    plt.title("Imagem após Equalização")
-    plt.show()
+    plt.title(f"Equalizada (Desvio Padrão: {stats_equa['desvio']:.2f})")
 
-    # A. Método de Otsu (Global)
-    # O Otsu retorna o limiar calculado (ret) e a imagem binarizada
-    print(f"cv2.THRESH_BINARY_INV = {cv2.THRESH_BINARY_INV} | cv2.THRESH_OTSU {cv2.THRESH_OTSU}")
-    ret, bin_otsu = cv2.threshold(img_cinza, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    plt.subplot(2, 2, 3)
+    plt.plot(stats_orig["hist"], color='blue')
+    plt.fill_between(range(256), stats_orig["hist"].flatten(), color='blue', alpha=0.3)
+    plt.title("Histograma Original (Frequência de Tons)")
+    plt.xlim([0, 256])
 
-    # B. Método Adaptativo (Local)
-    # 11 é o tamanho do bloco (vizinhança), 2 é uma constante subtraída da média
-    print(f"cv2.THRESH_BINARY_INV = {cv2.THRESH_BINARY_INV} | cv2.ADAPTIVE_THRESH_GAUSSIAN_C {cv2.ADAPTIVE_THRESH_GAUSSIAN_C}")
-    #bin_adapt = cv2.adaptiveThreshold(img_cinza, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-    #                                cv2.THRESH_BINARY_INV, 31, 2)
-    bin_adapt = binarizacao_automatica_adaptativa(img_cinza)
-    
-    # Exibição para o relatório
-    plt.figure(figsize=(12, 5))
+    plt.subplot(2, 2, 4)
+    plt.plot(stats_equa["hist"], color='red')
+    plt.fill_between(range(256), stats_equa["hist"].flatten(), color='red', alpha=0.3)
+    plt.title("Histograma Equalizado (Distribuição Uniforme)")
+    plt.xlim([0, 256])
+
+    plt.tight_layout(rect=(0, 0.03, 1, 0.95))
+
+    # JANELA 2: Comparação de Técnicas de Thresholding
+    plt.figure(figsize=(15, 6))
+    plt.suptitle("Segmentação: Otsu (Global) vs. Adaptativa (Local)", fontsize=16)
+
     plt.subplot(1, 2, 1)
     plt.imshow(bin_otsu, cmap='gray')
-    plt.title(f"Otsu (Limiar: {ret})")
+    plt.title(f"Método de Otsu\nLimiar Automático: {limiar_otsu}")
 
     plt.subplot(1, 2, 2)
-    plt.imshow(bin_adapt, cmap='gray')
-    plt.title("Adaptativa (Resistente a sombras)")
+    plt.imshow(bin_adaptativa, cmap='gray')
+    plt.title(f"Método Adaptativo\nBloco: {stats_orig['sugestao_bloco']} | C: {stats_orig['sugestao_c']}\nÁrea Ocupada: {porcentagem_area:.2f}%")
+
+    plt.tight_layout(rect=(0, 0.03, 1, 0.95))
+
+    # RELATÓRIO VIA CONSOLE
+    print("\n" + "="*50)
+    print("         RELATÓRIO TÉCNICO DE EXECUÇÃO")
+    print("="*50)
+    print(f"Resolução da Imagem: {stats_orig['resolucao'][0]}x{stats_orig['resolucao'][1]}")
+    print(f"Média de Brilho Original: {stats_orig['media']:.2f}")
+    print(f"Contraste Original (Desvio Padrão): {stats_orig['desvio']:.2f}")
+    print("-" * 50)
+    print(f"Parâmetros de Segmentação Calculados:")
+    print(f" > Tamanho do Bloco Local: {stats_orig['sugestao_bloco']} pixels")
+    print(f" > Constante de Sensibilidade (C): {stats_orig['sugestao_c']}")
+    print("-" * 50)
+    print(f"RESULTADO FINAL DE OCUPAÇÃO: {porcentagem_area:.2f}% da cena")
+    print("="*50)
+
     plt.show()
 
-    # No OpenCV, após a binarização:
-    # Objeto (Branco) = 255
-    # Fundo (Preto) = 0
-
-    # 1. Contar pixels do objeto
-    pixels_objeto = cv2.countNonZero(bin_adapt)
-
-    # 2. Total de pixels da imagem
-    total_pixels = bin_adapt.size # largura * altura
-
-    # 3. Cálculo da porcentagem
-    porcentagem_area = (pixels_objeto / total_pixels) * 100
-
-    print(f"Total de pixels: {total_pixels}")
-    print(f"Pixels do objeto: {pixels_objeto}")
-    print(f"O objeto ocupa {porcentagem_area:.2f}% da cena.")
-
-    
-
-# --- BLOCO PRINCIPAL (MAIN) ---
+# Ponto de entrada do script
 if __name__ == "__main__":
-    print("Iniciando Roteiro de atividade - Avaliativa 01")
-    
-    
     main()
-
-    print("\n--- Atividade Finalizada ---")
