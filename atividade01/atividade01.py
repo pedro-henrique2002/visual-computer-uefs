@@ -43,24 +43,23 @@ def extrair_estatisticas_dominio_valor(img_cinza):
     Esta função atua no 'Domínio do Valor'. Ela não olha para 'o que' está na 
     imagem, mas sim para 'como' os números (intensidades) estão distribuídos.
     
+    Heurística: Utilizamos o Desvio Padrão (contraste) para ditar o comportamento 
+    dos filtros espaciais. Se o desvio é baixo, a imagem é "flat", então 
+    aumentamos o tamanho do bloco para buscar variações locais mais sutis.
+    
     Retorna um dicionário com: histograma, média, desvio padrão e 
     parâmetros sugeridos para binarização.
     """
     
     # 1. Cálculo do Histograma:
     # Conta a frequência de cada um dos 256 níveis de cinza.
-    # [img]: imagem fonte | [0]: canal (cinza só tem 1) | None: sem máscara
-    # [256]: número de barras (bins) | [0, 256]: intervalo de valores
     histograma = cv2.calcHist([img_cinza], [0], None, [256], [0, 256])
 
     # 2. Média Aritmética (Brilho Geral):
-    # Indica se a imagem é, em média, clara ou escura.
     media = np.mean(img_cinza)
 
     # 3. Desvio Padrão (Contraste):
-    # É a medida de quão 'espalhado' está o histograma.
-    # Desvio alto = Histograma espalhado (Alto contraste).
-    # Desvio baixo = Histograma espremido (Baixo contraste/Imagem lavada).
+    # Medida de dispersão. Alto desvio = histograma largo (bom contraste).
     desvio_padrao = np.std(img_cinza)
 
     # 4. Cálculo de Parâmetros Adaptativos baseados na Resolução:
@@ -99,29 +98,22 @@ def main():
     print("--- Iniciando Processamento de Imagem (Estudo Dirigido) ---")
 
     # [PASSO 1] Carregar Imagem e Converter para Cinza
-    # O processamento estatístico de brilho exige apenas um canal (intensidade).
     img_original = selecionar_e_ler_imagem()
     img_cinza = cv2.cvtColor(img_original, cv2.COLOR_BGR2GRAY)
 
     # [PASSO 2] Análise Inicial do Domínio do Valor
-    # Extraímos os dados antes de qualquer modificação.
     stats_orig = extrair_estatisticas_dominio_valor(img_cinza)
 
     # [PASSO 3] Melhoria de Imagem (Equalização de Histograma)
-    # Este processo redistribui as intensidades para ocupar todo o espectro 0-255.
     img_equalizada = cv2.equalizeHist(img_cinza)
     stats_equa = extrair_estatisticas_dominio_valor(img_equalizada)
 
     # [PASSO 4] Binarização Global (Método de Otsu)
-    # O Otsu analisa o histograma e tenta achar o 'vale' entre dois 'picos'.
-    # Usamos THRESH_BINARY_INV para que o objeto fique BRANCO (255).
     limiar_otsu, bin_otsu = cv2.threshold(
         img_cinza, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
 
     # [PASSO 5] Binarização Adaptativa (Local)
-    # Diferente do Otsu, ele calcula o limiar para cada vizinhança de tamanho 'bloco'.
-    # Usamos os parâmetros calculados automaticamente pela nossa função estatística.
     bin_adaptativa = cv2.adaptiveThreshold(
         img_cinza, 255, 
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
@@ -131,10 +123,37 @@ def main():
     )
 
     # [PASSO 6] Cálculo de Métrica de Preenchimento (Área)
-    # Como binarizamos com INV, o objeto é 255 (branco).
     pixels_objeto = cv2.countNonZero(bin_adaptativa)
     pixels_totais = bin_adaptativa.size
     porcentagem_area = (pixels_objeto / pixels_totais) * 100
+
+    # =============================================================================
+    # [PASSO 7] DESAFIO DE SIMILARIDADE (ROI E COMPARAÇÃO DE HISTOGRAMAS)
+    # =============================================================================
+    print("\n[DESAFIO] Selecione dois objetos na imagem com o mouse.")
+    print("Instruções: Selecione a área do primeiro objeto e pressione ENTER. Repita para o segundo.")
+    
+    # Seleção de ROI usando interface do OpenCV
+    roi1_box = cv2.selectROI("Selecione o Objeto 1 e pressione ENTER", img_cinza, fromCenter=False)
+    x1, y1, w1, h1 = roi1_box
+    obj1 = img_cinza[y1:y1+h1, x1:x1+w1]
+
+    roi2_box = cv2.selectROI("Selecione o Objeto 2 e pressione ENTER", img_cinza, fromCenter=False)
+    x2, y2, w2, h2 = roi2_box
+    obj2 = img_cinza[y2:y2+h2, x2:x2+w2]
+    
+    cv2.destroyAllWindows()
+
+    # Cálculo e Normalização dos Histogramas para Comparação
+    hist_obj1 = cv2.calcHist([obj1], [0], None, [256], [0, 256])
+    hist_obj2 = cv2.calcHist([obj2], [0], None, [256], [0, 256])
+    
+    # Normalizamos para que a comparação seja justa mesmo com ROIs de tamanhos diferentes
+    cv2.normalize(hist_obj1, hist_obj1, 0, 1, cv2.NORM_MINMAX)
+    cv2.normalize(hist_obj2, hist_obj2, 0, 1, cv2.NORM_MINMAX)
+    
+    # Comparação usando Correlação (1.0 = Idêntico, 0.0 = Diferente)
+    similaridade = cv2.compareHist(hist_obj1, hist_obj2, cv2.HISTCMP_CORREL)
 
     # =============================================================================
     # APRESENTAÇÃO DOS RESULTADOS (GRÁFICOS)
@@ -180,6 +199,28 @@ def main():
 
     plt.tight_layout(rect=(0, 0.03, 1, 0.95))
 
+    # JANELA 3: Desafio de Similaridade (ROI)
+    plt.figure(figsize=(15, 8))
+    plt.suptitle(f"Desafio de Similaridade - Índice de Correlação: {similaridade:.4f}", fontsize=16)
+
+    plt.subplot(2, 2, 1)
+    plt.imshow(obj1, cmap='gray')
+    plt.title("Objeto 1 (Recorte)")
+
+    plt.subplot(2, 2, 2)
+    plt.imshow(obj2, cmap='gray')
+    plt.title("Objeto 2 (Recorte)")
+
+    plt.subplot(2, 2, 3)
+    plt.plot(hist_obj1, color='green')
+    plt.title("Histograma Normalizado - Objeto 1")
+
+    plt.subplot(2, 2, 4)
+    plt.plot(hist_obj2, color='orange')
+    plt.title("Histograma Normalizado - Objeto 2")
+
+    plt.tight_layout(rect=(0, 0.03, 1, 0.95))
+
     # RELATÓRIO VIA CONSOLE
     print("\n" + "="*50)
     print("         RELATÓRIO TÉCNICO DE EXECUÇÃO")
@@ -193,6 +234,7 @@ def main():
     print(f" > Constante de Sensibilidade (C): {stats_orig['sugestao_c']}")
     print("-" * 50)
     print(f"RESULTADO FINAL DE OCUPAÇÃO: {porcentagem_area:.2f}% da cena")
+    print(f"NÍVEL DE SIMILARIDADE (ROI): {similaridade:.4f}")
     print("="*50)
 
     plt.show()
